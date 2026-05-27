@@ -1,4 +1,5 @@
-name: Train HPCLM + QHPCLM
+
+name: Train HPCLM + QHPCLM + Hybrid_LM
 
 on:
   push:
@@ -21,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: pip install numpy scipy
 
-      - name: Download dataset (Pride and Prejudice — 700KB, public domain)
+      - name: Download dataset
         run: |
           curl -o dataset.txt "https://www.gutenberg.org/files/1342/1342-0.txt"
           echo "Dataset size: $(wc -c < dataset.txt) bytes"
@@ -31,6 +32,9 @@ jobs:
 
       - name: Train quantum QHPCLM
         run: python train_qhpclm.py --file dataset.txt --chars 100000 --epochs 15 --hilbert-dim 64
+
+      - name: Train Hybrid_LM
+        run: python train_hybrid.py --file dataset.txt --chars 100000 --epochs 50
 
       - name: Upload results
         uses: actions/upload-artifact@v4
