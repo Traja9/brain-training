@@ -1,4 +1,4 @@
-name: Train HPCLM
+name: Train HPCLM + QHPCLM
 
 on:
   push:
@@ -26,8 +26,11 @@ jobs:
           curl -o dataset.txt "https://www.gutenberg.org/files/1342/1342-0.txt"
           echo "Dataset size: $(wc -c < dataset.txt) bytes"
 
-      - name: Train HPCLM
+      - name: Train classical HPCLM
         run: python train_large.py --file dataset.txt --chars 200000 --epochs 20
+
+      - name: Train quantum QHPCLM
+        run: python train_qhpclm.py --file dataset.txt --chars 100000 --epochs 15 --hilbert-dim 64
 
       - name: Upload results
         uses: actions/upload-artifact@v4
