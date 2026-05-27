@@ -27,6 +27,7 @@ from typing import Dict, List
 import numpy as np
 from scipy.linalg import qr as scipy_qr
 from scipy.special import rel_entr, softmax
+import json
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -67,6 +68,145 @@ class CharTokenizer:
             for i in ids
             if not skip_special or i not in special
         )
+
+    def save_vocab(self, path: str):
+        with open(path, 'w') as f:
+            json.dump({'type': 'char', 'ch2id': self.ch2id}, f)
+
+    @classmethod
+    def load_vocab(cls, path: str) -> 'CharTokenizer':
+        with open(path) as f:
+            data = json.load(f)
+        tok = cls()
+        tok.ch2id = data['ch2id']
+        tok.id2ch = {int(v): k for k, v in tok.ch2id.items()}
+        return tok
+
+    @property
+    def vocab_size(self) -> int:
+        return len(self.ch2id)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BPE Tokenizer — subword tokenization from first principles, zero external deps
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BPETokenizer:
+    """
+    Byte Pair Encoding tokenizer — drop-in replacement for CharTokenizer.
+
+    Learns subword merge rules from a corpus so common subwords (e.g. "ing",
+    "the", "tion") become single tokens. This bridges char-level and word-level
+    and improves next-token accuracy on real text.
+
+    Encode/decode interface is identical to CharTokenizer.
+    """
+    PAD, UNK, BOS, EOS = 0, 1, 2, 3
+
+    def __init__(self, vocab_size: int = 1000):
+        self.target_vocab_size = vocab_size
+        self.ch2id: Dict[str, int] = {
+            '<PAD>': 0, '<UNK>': 1, '<BOS>': 2, '<EOS>': 3,
+        }
+        self.id2ch: Dict[int, str] = {v: k for k, v in self.ch2id.items()}
+        self.merges: List[tuple] = []
+
+    def fit(self, text: str) -> 'BPETokenizer':
+        """Learn BPE merge rules from text (Sennrich et al. 2016)."""
+        from collections import Counter
+        # Words as tuples of chars + end-of-word marker
+        words: Dict[tuple, int] = Counter(
+            tuple(list(w) + ['</w>']) for w in text.split() if w
+        )
+        # Seed vocab with all unique chars
+        for word in words:
+            for sym in word:
+                if sym not in self.ch2id:
+                    idx = len(self.ch2id)
+                    self.ch2id[sym] = idx
+                    self.id2ch[idx] = sym
+
+        num_merges = max(0, self.target_vocab_size - len(self.ch2id))
+        for _ in range(num_merges):
+            pairs: Dict[tuple, int] = Counter()
+            for word, freq in words.items():
+                for a, b in zip(word, word[1:]):
+                    pairs[(a, b)] += freq
+            if not pairs:
+                break
+            best = max(pairs, key=pairs.__getitem__)
+            merged = best[0] + best[1]
+            self.merges.append(best)
+            if merged not in self.ch2id:
+                idx = len(self.ch2id)
+                self.ch2id[merged] = idx
+                self.id2ch[idx] = merged
+            new_words: Dict[tuple, int] = {}
+            for word, freq in words.items():
+                new_word: list = []
+                i = 0
+                while i < len(word):
+                    if i < len(word) - 1 and word[i] == best[0] and word[i + 1] == best[1]:
+                        new_word.append(merged)
+                        i += 2
+                    else:
+                        new_word.append(word[i])
+                        i += 1
+                new_words[tuple(new_word)] = freq
+            words = new_words
+        return self
+
+    def _encode_word(self, word: str) -> List[int]:
+        symbols = list(word) + ['</w>']
+        for a, b in self.merges:
+            merged = a + b
+            i, new = 0, []
+            while i < len(symbols):
+                if i < len(symbols) - 1 and symbols[i] == a and symbols[i + 1] == b:
+                    new.append(merged)
+                    i += 2
+                else:
+                    new.append(symbols[i])
+                    i += 1
+            symbols = new
+        return [self.ch2id.get(s, self.UNK) for s in symbols]
+
+    def encode(self, text: str, add_bos: bool = True, add_eos: bool = True) -> List[int]:
+        ids: List[int] = []
+        words = text.split()
+        if words:
+            for word in words:
+                ids.extend(self._encode_word(word))
+        else:
+            ids = [self.ch2id.get(c, self.UNK) for c in text]
+        if add_bos:
+            ids = [self.BOS] + ids
+        if add_eos:
+            ids = ids + [self.EOS]
+        return ids
+
+    def decode(self, ids: List[int], skip_special: bool = True) -> str:
+        special = {self.PAD, self.UNK, self.BOS, self.EOS}
+        toks = [
+            self.id2ch.get(i, '?')
+            for i in ids
+            if not skip_special or i not in special
+        ]
+        return ''.join(toks).replace('</w>', ' ').strip()
+
+    def save_vocab(self, path: str):
+        with open(path, 'w') as f:
+            json.dump({'type': 'bpe', 'ch2id': self.ch2id, 'merges': self.merges}, f)
+
+    @classmethod
+    def load_vocab(cls, path: str) -> 'BPETokenizer':
+        with open(path) as f:
+            data = json.load(f)
+        tok = cls()
+        tok.ch2id  = data['ch2id']
+        tok.id2ch  = {int(v): k for k, v in tok.ch2id.items()}
+        tok.merges = [tuple(m) for m in data.get('merges', [])]
+        return tok
 
     @property
     def vocab_size(self) -> int:
@@ -452,6 +592,78 @@ class HPCLM:
             'l2_sparsity':  self.L2.sparsity_ratio,
             'l3_sparsity':  self.L3.sparsity_ratio,
         }
+
+    def save(self, path: str):
+        """Save weights + tokenizer to a single .npz file."""
+        if not path.endswith('.npz'):
+            path = path + '.npz'
+        if isinstance(self.tok, BPETokenizer):
+            tok_data = {'type': 'bpe', 'ch2id': self.tok.ch2id, 'merges': self.tok.merges}
+        else:
+            tok_data = {'type': 'char', 'ch2id': self.tok.ch2id}
+        vocab_bytes = json.dumps(tok_data).encode('utf-8')
+        np.savez(
+            path,
+            E=self.E,
+            decode_W=self.decode_W,
+            L1_W=self.L1.W,        L1_V=self.L1.V,
+            L2_W=self.L2.W,        L2_V=self.L2.V,
+            L3_W=self.L3.W,        L3_V=self.L3.V,
+            step_count=np.array(self.step_count),
+            L1_precision=np.array(self.L1.precision),
+            L2_precision=np.array(self.L2.precision),
+            L3_precision=np.array(self.L3.precision),
+            embed_dim=np.array(self.embed_dim),
+            l1_dim=np.array(self.L1.act_dim),
+            l2_dim=np.array(self.L2.act_dim),
+            l3_dim=np.array(self.L3.act_dim),
+            l1_k=np.array(self.L1.k),
+            l2_k=np.array(self.L2.k),
+            l3_k=np.array(self.L3.k),
+            lr=np.array(self.lr),
+            vocab=np.frombuffer(vocab_bytes, dtype=np.uint8),
+        )
+
+    @classmethod
+    def load(cls, path: str) -> 'HPCLM':
+        """Load model from a .npz file saved by save()."""
+        if not path.endswith('.npz'):
+            path = path + '.npz'
+        d = np.load(path, allow_pickle=False)
+        tok_data = json.loads(bytes(d['vocab']).decode('utf-8'))
+        if tok_data.get('type') == 'bpe':
+            tok = BPETokenizer()
+            tok.ch2id  = tok_data['ch2id']
+            tok.id2ch  = {int(v): k for k, v in tok.ch2id.items()}
+            tok.merges = [tuple(m) for m in tok_data.get('merges', [])]
+        else:
+            tok = CharTokenizer()
+            tok.ch2id = tok_data['ch2id']
+            tok.id2ch = {int(v): k for k, v in tok.ch2id.items()}
+        l1_dim = int(d['l1_dim'])
+        l2_dim = int(d['l2_dim'])
+        l3_dim = int(d['l3_dim'])
+        model = cls(
+            tok,
+            embed_dim   = int(d['embed_dim']),
+            l1_dim      = l1_dim,
+            l2_dim      = l2_dim,
+            l3_dim      = l3_dim,
+            l1_sparsity = float(d['l1_k']) / l1_dim,
+            l2_sparsity = float(d['l2_k']) / l2_dim,
+            l3_sparsity = float(d['l3_k']) / l3_dim,
+            lr          = float(d['lr']),
+        )
+        model.E          = d['E']
+        model.decode_W   = d['decode_W']
+        model.L1.W       = d['L1_W'];   model.L1.V = d['L1_V']
+        model.L2.W       = d['L2_W'];   model.L2.V = d['L2_V']
+        model.L3.W       = d['L3_W'];   model.L3.V = d['L3_V']
+        model.step_count   = int(d['step_count'])
+        model.L1.precision = float(d['L1_precision'])
+        model.L2.precision = float(d['L2_precision'])
+        model.L3.precision = float(d['L3_precision'])
+        return model
 
     def summary(self):
         s = self.get_state()

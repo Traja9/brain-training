@@ -32,6 +32,7 @@ Three levels (γ controls decoherence / forgetting speed):
 import numpy as np
 from typing import Dict, List, Tuple
 import time
+import json
 
 from Quantum_Cognition import (
     DensityMatrix,
@@ -451,6 +452,59 @@ class QHPCLM:
         return self.tok.decode(out_ids)
 
     # ── helpers ───────────────────────────────────────────────────────────────
+
+    def save(self, path: str):
+        """Save Hamiltonians + embeddings + tokenizer to a single .npz file."""
+        if not path.endswith('.npz'):
+            path = path + '.npz'
+        tok_data   = {'type': 'char', 'ch2id': self.tok.ch2id}
+        vocab_bytes = json.dumps(tok_data).encode('utf-8')
+        np.savez(
+            path,
+            E_psi_re=self.E_psi.real.astype(np.float64),
+            E_psi_im=self.E_psi.imag.astype(np.float64),
+            L1_H_re=self.L1.H.real.astype(np.float64),
+            L1_H_im=self.L1.H.imag.astype(np.float64),
+            L2_H_re=self.L2.H.real.astype(np.float64),
+            L2_H_im=self.L2.H.imag.astype(np.float64),
+            L3_H_re=self.L3.H.real.astype(np.float64),
+            L3_H_im=self.L3.H.imag.astype(np.float64),
+            step_count       = np.array(self.step_count),
+            hilbert_dim      = np.array(self.hilbert_dim),
+            lr               = np.array(self.lr),
+            decoherence_rate = np.array(self.L1.gamma),
+            mem_capacity     = np.array(self.qmemory._capacity),
+            walk_nodes       = np.array(self.qwalk._n),
+            vocab=np.frombuffer(vocab_bytes, dtype=np.uint8),
+        )
+
+    @classmethod
+    def load(cls, path: str) -> 'QHPCLM':
+        """Load model from a .npz file saved by save()."""
+        if not path.endswith('.npz'):
+            path = path + '.npz'
+        d = np.load(path, allow_pickle=False)
+        tok_data = json.loads(bytes(d['vocab']).decode('utf-8'))
+        tok = CharTokenizer()
+        tok.ch2id = tok_data['ch2id']
+        tok.id2ch = {int(v): k for k, v in tok.ch2id.items()}
+        model = cls(
+            tok,
+            hilbert_dim      = int(d['hilbert_dim']),
+            decoherence_rate = float(d['decoherence_rate']),
+            lr               = float(d['lr']),
+            mem_capacity     = int(d['mem_capacity']),
+            walk_nodes       = int(d['walk_nodes']),
+        )
+        model.E_psi   = d['E_psi_re'] + 1j * d['E_psi_im']
+        model.L1.H    = d['L1_H_re']  + 1j * d['L1_H_im']
+        model.L2.H    = d['L2_H_re']  + 1j * d['L2_H_im']
+        model.L3.H    = d['L3_H_re']  + 1j * d['L3_H_im']
+        model.L1._U   = None   # force unitary recompute on first evolve()
+        model.L2._U   = None
+        model.L3._U   = None
+        model.step_count = int(d['step_count'])
+        return model
 
     def reset_context(self):
         self.L1.reset()
