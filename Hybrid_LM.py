@@ -153,7 +153,7 @@ class Hybrid_LM:
         )
 
         self.step_count       = 0
-        self._fe_history: List[float] = []
+        self._fe_history: List[float] = []   # capped at 200
 
     # ── embedding ─────────────────────────────────────────────────────────────
 
@@ -211,6 +211,8 @@ class Hybrid_LM:
                     + self.L2.avg_free_energy
                     + self.L3.avg_free_energy)
         self._fe_history.append(total_fe)
+        if len(self._fe_history) > 200:
+            self._fe_history.pop(0)
         self.step_count += 1
 
         top_id = int(np.argmax(probs))
