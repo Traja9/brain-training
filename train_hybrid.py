@@ -181,7 +181,8 @@ log.close()
 print("\n  Results saved to results/hybrid_training_log.txt")
 
 # ── Interactive inference (terminal only) ─────────────────────────────────────
-if sys.stdin.isatty():
+_is_colab = 'google.colab' in sys.modules or os.path.exists('/content')
+if sys.stdin.isatty() and not _is_colab:
     print("\n── Interactive Mode ─────────────────────────────────────────────────────")
     print("  Enter a prompt to generate text.")
     print("  Settings: :temp 0.8   :topk 8   :len 150   quit")
