@@ -472,8 +472,9 @@ class PreciousBrain:
                     )
         else:
             # Derive approximate values from emotion when engine not available
+            _valence = getattr(emotion, 'valence', emotion.body_arousal)
             self._neuromodulators['dopamine'] = float(np.clip(
-                0.5 + 0.4 * emotion.valence, 0.1, 0.9))
+                0.5 + 0.4 * _valence, 0.1, 0.9))
             self._neuromodulators['norepinephrine'] = float(np.clip(
                 0.3 + 0.6 * self.state.arousal_level, 0.1, 0.95))
 
